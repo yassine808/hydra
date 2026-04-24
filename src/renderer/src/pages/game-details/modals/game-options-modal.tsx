@@ -1,6 +1,8 @@
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal } from "@renderer/components";
+import { TransferGameModal } from "./transfer-game-modal";
+
 import type {
   CreateSteamShortcutOptions,
   Game,
@@ -50,6 +52,7 @@ export interface GameOptionsModalProps {
   onClose: () => void;
   onNavigateHome?: () => void;
   initialCategory?: GameSettingsCategoryId;
+  isTransferring?: boolean;
 }
 
 export function GameOptionsModal({
@@ -58,6 +61,7 @@ export function GameOptionsModal({
   onClose,
   onNavigateHome,
   initialCategory,
+  isTransferring = false,
 }: Readonly<GameOptionsModalProps>) {
   const MANGOHUD_SITE_URL = "https://mangohud.com";
   const GAMEMODE_SITE_URL = "https://github.com/FeralInteractive/gamemode";
@@ -76,6 +80,13 @@ export function GameOptionsModal({
     shopDetails,
   } = useContext(gameDetailsContext);
 
+  const [transferProgress, setTransferProgress] = useState(0);
+  const [drives, setDrives] = useState<any[]>([]);
+  const [transferSpeed, setTransferSpeed] = useState(0);
+  const [transferETA, setTransferETA] = useState(0);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+
+  const [showTransferModal, setShowTransferModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showRemoveGameModal, setShowRemoveGameModal] = useState(false);
   const [gameTitle, setGameTitle] = useState(game.title ?? "");
@@ -137,6 +148,21 @@ export function GameOptionsModal({
 
   const isGameDownloading =
     game.download?.status === "active" && lastPacket?.gameId === game.id;
+
+  useEffect(() => {
+    if (visible) {
+      console.log("🟢 Modal visible, fetching drives...");
+      window.electron
+        .getAvailableDrives?.()
+        .then((result) => {
+          console.log("✅ Drives fetched:", result);
+          setDrives(result);
+        })
+        .catch((err) => {
+          console.error("❌ Failed to fetch drives:", err);
+        });
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (
@@ -240,6 +266,32 @@ export function GameOptionsModal({
     }
   }, [game.shop, game.objectId]);
 
+  useEffect(() => {
+    const onProgress = (
+      _: unknown,
+      shop: string,
+      oid: string,
+      progress: number,
+      details?: {
+        speed: number;
+        eta: number;
+        transferred: number;
+        total: number;
+      }
+    ) => {
+      if (shop === game.shop && oid === game.objectId) {
+        setTransferProgress(progress);
+        if (details) {
+          setTransferSpeed(details.speed);
+          setTransferETA(details.eta);
+        }
+      }
+    };
+
+    window.electron.on("on-game-transfer-progress", onProgress);
+    return () => window.electron.off("on-game-transfer-progress", onProgress);
+  }, [game]);
+
   const debounceUpdateLaunchOptions = useRef(
     debounce(async (value: string) => {
       const gameKey = getGameKey(game.shop, game.objectId);
@@ -268,7 +320,6 @@ export function GameOptionsModal({
     await Promise.all([updateGame(), updateLibrary(), loadCollections()]);
     onClose();
 
-    // Redirect to home page if it's a custom game
     if (game.shop === "custom" && onNavigateHome) {
       onNavigateHome();
     }
@@ -278,23 +329,11 @@ export function GameOptionsModal({
     await updateGame();
   };
 
-  // ========== NEW HANDLERS ==========
-  const handlePauseTransfer = () => {
-    window.electron.pauseGameTransfer?.(game.shop, game.objectId);
-    setIsTransferPaused(true);
-  };
-
-  const handleResumeTransfer = () => {
-    window.electron.resumeGameTransfer?.(game.shop, game.objectId);
-    setIsTransferPaused(false);
-  };
-
   const handleCancelTransfer = () => {
     window.electron.cancelGameTransfer?.(game.shop, game.objectId);
     setTransferProgress(0);
     setTransferSpeed(0);
     setTransferETA(0);
-    setIsTransferPaused(false);
     setShowCancelConfirm(false);
   };
 
@@ -306,13 +345,12 @@ export function GameOptionsModal({
     );
     if (!result.ok) {
       showErrorToast(result.error || "Transfer failed");
-      throw new Error(result.error); // This prevents parent from closing
+      throw new Error(result.error);
     } else {
       showSuccessToast("Transfer completed successfully!");
       await updateGame();
     }
   };
-  // =================================
 
   const handleChangeExecutableLocation = async () => {
     const path = await selectGameExecutable();
@@ -432,7 +470,6 @@ export function GameOptionsModal({
 
   const handleClearExecutablePath = async () => {
     await window.electron.updateExecutablePath(game.shop, game.objectId, null);
-
     updateGame();
   };
 
@@ -510,7 +547,6 @@ export function GameOptionsModal({
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const value = event.target.value;
-
     setLaunchOptions(value);
     debounceUpdateLaunchOptions(value);
   };
@@ -572,12 +608,10 @@ export function GameOptionsModal({
 
   const handleChangeProtonVersion = (value: string) => {
     setSelectedProtonPath(value);
-
     const currentProtonPath = game.protonPath ?? "";
     if (value === currentProtonPath) {
       return;
     }
-
     void applyProtonPathChange(value);
   };
 
@@ -705,6 +739,13 @@ export function GameOptionsModal({
         deleteGame={handleDeleteGame}
       />
 
+      <TransferGameModal
+        visible={showTransferModal}
+        game={game}
+        onClose={() => setShowTransferModal(false)}
+        onTransferComplete={handleTransferComplete}
+      />
+
       <RemoveGameFromLibraryModal
         visible={showRemoveGameModal}
         onClose={() => setShowRemoveGameModal(false)}
@@ -775,6 +816,18 @@ export function GameOptionsModal({
                 onBlurGameTitle={handleBlurGameTitle}
                 onChangeLaunchOptions={handleChangeLaunchOptions}
                 onClearLaunchOptions={handleClearLaunchOptions}
+                onTransferGame={() => {}}
+                isTransferring={isTransferring}
+                transferProgress={transferProgress}
+                drives={drives}
+                onStartTransfer={handleStartTransfer}
+                onCancelDriveSelection={() => {}}
+                transferSpeed={transferSpeed}
+                transferETA={transferETA}
+                showCancelConfirm={showCancelConfirm}
+                onShowCancelConfirm={() => setShowCancelConfirm(true)}
+                onHideCancelConfirm={() => setShowCancelConfirm(false)}
+                onConfirmCancelTransfer={handleCancelTransfer}
               />
             )}
 
