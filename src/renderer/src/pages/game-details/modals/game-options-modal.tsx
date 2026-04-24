@@ -274,6 +274,46 @@ export function GameOptionsModal({
     }
   };
 
+  const handleTransferComplete = async (_newExePath: string) => {
+    await updateGame();
+  };
+
+  // ========== NEW HANDLERS ==========
+  const handlePauseTransfer = () => {
+    window.electron.pauseGameTransfer?.(game.shop, game.objectId);
+    setIsTransferPaused(true);
+  };
+
+  const handleResumeTransfer = () => {
+    window.electron.resumeGameTransfer?.(game.shop, game.objectId);
+    setIsTransferPaused(false);
+  };
+
+  const handleCancelTransfer = () => {
+    window.electron.cancelGameTransfer?.(game.shop, game.objectId);
+    setTransferProgress(0);
+    setTransferSpeed(0);
+    setTransferETA(0);
+    setIsTransferPaused(false);
+    setShowCancelConfirm(false);
+  };
+
+  const handleStartTransfer = async (destPath: string) => {
+    const result = await window.electron.transferGameFiles(
+      game.shop,
+      game.objectId,
+      destPath
+    );
+    if (!result.ok) {
+      showErrorToast(result.error || "Transfer failed");
+      throw new Error(result.error); // This prevents parent from closing
+    } else {
+      showSuccessToast("Transfer completed successfully!");
+      await updateGame();
+    }
+  };
+  // =================================
+
   const handleChangeExecutableLocation = async () => {
     const path = await selectGameExecutable();
 
